@@ -1,19 +1,133 @@
-[project]
-authors = [{name = "Payman Tohidifar", email = "payman.tohidifar@gmail.com"}]
-dependencies = []
-name = "pfdl"
-requires-python = ">= 3.11"
-version = "0.1.0"
-
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
+[project]
+name = "pfdl"
+version = "0.1.0"
+description = "Deep Learning for Protein Function Prediction"
+readme = "README.md"
+requires-python = "==3.11.*"
+authors = [
+    { name = "Payman Tohidifar", email = "payman.tohidifar@gmail.com" }
+]
+license = { text = "MIT" }
+
+# Base Dependencies (CPU & GPU Shared)
+dependencies = [
+    "numpy>=2.2.0",
+    "pandas>=2.2.0",
+    "scikit-learn>=1.5.0",
+    "matplotlib>=3.10.0",
+    "seaborn>=0.13.2",
+    "adjusttext>=1.3.0",
+    "flax>=0.10.0",
+    "jax>=0.10.0",
+    "jaxlib>=0.10.0",
+    "triton>=3.0.0; sys_platform == 'linux'", # Triton is only supported natively on Linux
+    "ml-dtypes>=0.5.0",
+    "tensorstore>=0.1.70",
+    "orbax-checkpoint>=0.11.0",
+    "optax>=0.2.0",
+    "click<9.0",
+    "typer>=0.12.0",
+    "ipinfo>=5.1.0",
+    "google-cloud-storage>=3.0.0",
+    "parfive>=2.2.0",
+    "python-dotenv>=1.2.2",
+    "biopython>=1.85",
+    "obonet>=1.0.0",
+    "datasets>=4.0.0",
+    "requests>=2.28",
+    "transformers>=4.54.0",
+    "ipykernel>=7.3.0",
+    "pixi-kernel>=0.1.0",
+]
+
+# Mutually Exclusive Hardware Accel Groups and Dev Utilities
+[project.optional-dependencies]
+cpu = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+]
+gpu = [
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    # Platform Markers ensure these ONLY resolve on Linux x86_64 systems to prevent Win/Mac resolution errors
+    "jax-cuda12-pjrt>=0.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "jax-cuda12-plugin>=0.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+dev = [
+    "ruff>=0.5.0",
+    "pytest>=8.2.0",
+]
+
+# Local packages to include in the wheel distribution
+[tool.hatch.build.targets.wheel]
+packages = ["src/pfdl"]
+
+# --- UV Hardware Resolver Indexing ---
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]] # Directs uv not to compile both extras into the same environment
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-gpu", extra = "gpu" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-gpu", extra = "gpu" },
+]
+
+# --- Ruff configuration ---
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+# --- Pixi Configuration Hook (Read ONLY by local Pixi installations) ---
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "win-64", "osx-arm64"]
+
+[tool.pixi.workspace.pypi-options]
+extra-index-urls = [
+    "https://download.pytorch.org/whl/cpu",
+    "https://download.pytorch.org/whl/cu124"
+]
+
+[tool.pixi.dependencies]
+python = "3.11.*"
 
 [tool.pixi.pypi-dependencies]
 pfdl = { path = ".", editable = true }
 
+[tool.pixi.pypi-options]
+index-strategy = "unsafe-best-match"
+
+[tool.pixi.feature.cpu]
+pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" } }
+
+[tool.pixi.feature.gpu]
+pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" } }
+
+[tool.pixi.feature.dev]
+pypi-dependencies = { ruff = ">=0.5.0", pytest = ">=8.2.0" }
+
+[tool.pixi.environments]
+default = ["cpu", "dev"]  # Standard local install defaults to clean CPU + Dev
+gpu-env = ["gpu", "dev"]  # GPU setup activates the full CUDA framework pipeline
+
 [tool.pixi.tasks]
+test = "pytest"
+lint = "ruff check ."
