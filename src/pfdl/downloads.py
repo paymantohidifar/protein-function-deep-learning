@@ -1,17 +1,19 @@
 import os
+import io
 from tqdm import tqdm
 import requests
 import tarfile
+from typing import Optional
 
 
-def download_data(base_url: str, filename:str, output_path: str) -> None:
+def download_data(base_url: str, filename:str, output_path: Optional[str]=None) -> None:
     
     # Define browser-like headers to prevent 403/406 blocking by the server
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    url = base_url + filename
+    url = "/".join([base_url, filename])
 
     print(f"Initiating stream from: {url}")
     
@@ -19,20 +21,23 @@ def download_data(base_url: str, filename:str, output_path: str) -> None:
     with requests.get(url, stream=True, headers=headers, timeout=60) as response:
     
         response.raise_for_status() # Gracefully capture HTTP errors
-        total_size = int(response.headers.get('content-length', 0)) # Track total size for the progress bar
-        chunk_size = 8192
         
-        with open(output_path, "wb") as file, tqdm(
-            desc=os.path.basename(output_path),
-            total=total_size,
-            unit='iB',
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as bar:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    file.write(chunk)
-                    bar.update(len(chunk))
+        if output_path is None:
+            return io.StringIO(response.text)
+        else:
+            total_size = int(response.headers.get('content-length', 0)) # Track total size for the progress bar
+            chunk_size = 8192
+            with open(output_path, "wb") as file, tqdm(
+                desc=os.path.basename(output_path),
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as bar:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        file.write(chunk)
+                        bar.update(len(chunk))
 
 
 def extract_tar_archive(archive_path: str, target_dir: str) -> None:
