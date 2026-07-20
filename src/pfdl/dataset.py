@@ -19,7 +19,7 @@ def get_go_term_descriptions(obo_url: str, store_path: Path) -> pd.DataFrame:
             graph = obonet.read_obo(obo_url)
             
         except Exception as e:
-            print("Server error occured. Falling back to direct download ...")
+            print(f"Error occured: {e}.\nTrying another method ...")
             url_parts = obo_url.split('/')
             base_url = "/".join(url_parts[:-1])
             filename = url_parts[-1]
@@ -36,10 +36,6 @@ def get_go_term_descriptions(obo_url: str, store_path: Path) -> pd.DataFrame:
         go_term_descriptions.to_csv(store_path, index=False)
 
         print(f"File is saved to {store_path}.")
-        
-
-
-
     else:
         print("File already exists. Parsing the file into dataframe.")
         go_term_descriptions = pd.read_csv(store_path)
