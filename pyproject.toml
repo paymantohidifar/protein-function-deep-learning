@@ -51,10 +51,12 @@ dependencies = [
 cpu = [
     "torch==2.6.0",
     "torchvision==0.21.0",
+    "torchaudio==2.6.0",
 ]
 gpu = [
     "torch==2.6.0",
     "torchvision==0.21.0",
+    "torchaudio==2.6.0",
     # Platform Markers ensure these ONLY resolve on Linux x86_64 systems to prevent Win/Mac resolution errors
     "jax-cuda12-pjrt>=0.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "jax-cuda12-plugin>=0.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -91,6 +93,10 @@ torchvision = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-gpu", extra = "gpu" },
 ]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-gpu", extra = "gpu" },
+]
 
 # --- Ruff configuration ---
 [tool.ruff]
@@ -118,10 +124,10 @@ pfdl = { path = ".", editable = true }
 index-strategy = "unsafe-best-match"
 
 [tool.pixi.feature.cpu]
-pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" } }
+pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" }, torchaudio = { version = "==2.6.0" } }
 
 [tool.pixi.feature.gpu]
-pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" } }
+pypi-dependencies = { torch = { version = "==2.6.0" }, torchvision = { version = "==0.21.0" }, torchaudio = { version = "==2.6.0" } }
 
 [tool.pixi.feature.dev]
 pypi-dependencies = { ruff = ">=0.5.0", pytest = ">=8.2.0" }
