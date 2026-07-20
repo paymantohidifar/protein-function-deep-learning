@@ -5,9 +5,66 @@ import pandas as pd
 from math import ceil
 import obonet
 import torch
+from torch.utils.data import Dataset, DataLoader
 import os
 from transformers import PreTrainedModel, PreTrainedTokenizer
 from pfdl.downloads import download_data
+from tqdm import tqdm
+
+
+class ProtDataset(Dataset):
+
+    def __init__(
+            self,
+            df: pd.DataFrame,
+            embedding_prefix: str = "ME",
+            target_prefix: str = "GO",
+        ) -> Dataset:
+        
+        # Set both embbedding and target data types numpy.float32
+        # Compatible with both PyTorch and JAX/FLAX
+        self.embedding = df.filter(regex=f"^{embedding_prefix}").to_numpy(dtype=np.float32)
+        self.target = df.filter(regex=f"^{target_prefix}").to_numpy(dtype=np.float32)
+
+    def __len__(self):
+        return self.embedding.shape[0]
+    
+    def __getitem__(self, idx):
+        
+        return {
+            'embedding': self.embedding[idx],
+            'target': self.target[idx]
+            }
+
+
+def build_dataset(
+        store_file_prefix: str,
+        model_checkpoint: str
+    ) -> dict[str, DataLoader]:
+
+    dataset_splits = {}
+
+    for split in ["train", "valid", "test"]:
+        df = load_sequence_embeddings(
+            store_file_prefix=f"{store_file_prefix}_{split}",
+            model_checkpoint=model_checkpoint
+        )
+        dataset_splits[split] = create_data_loader(
+            ProtDataset(df),
+            is_training=(split == "train")
+        )
+    
+    return dataset_splits
+
+
+def create_data_loader(dataset, batch_size=32, is_training=False):
+
+    return DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=is_training, # Only shuffles the training set
+        drop_last=is_training, # drop_last keeps batch sizes consistent during training steps
+    )
 
 
 def get_go_term_descriptions(obo_url: str, store_path: Path) -> pd.DataFrame:
@@ -55,22 +112,36 @@ def store_sequence_embeddings(
     
     model_name = str(model.name_or_path).replace("/", "_")
     store_file = f"{store_prefix}_{model_name}.feather"
-    # store_file = f"{store_prefix}_{model_name}.zarr"
-    # store_file = store_prefix.with_stem(f"_{model_name}").with_suffix(".zarr")
 
     if not os.path.exists(store_file) or force:
-    # if not store_file.exits() or force:
-        # device = get_device()
+        
+        # Set device (CPU or GPU)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Iterate through protein dataframe in batches, extracting embeddings.
+        
+        n_samples = sequence_df.shape[0]
         n_batches = ceil(sequence_df.shape[0] / batch_size)
+        
         batches: list[np.ndarray] = []
-        for i in range(n_batches):
-            batch_seqs = list(
-                sequence_df["Sequence"][i * batch_size : (i + 1) * batch_size]
-            )
-            batches.extend(get_mean_embeddings(batch_seqs, tokenizer, model, device))
+
+        # Instantiate progress bar track across mini-batches
+        with tqdm(
+            total=n_batches, 
+            desc=f"Inference [{model_name}]", 
+            unit="batch",
+            dynamic_ncols=True
+        ) as pbar:
+            for i in range(n_batches):
+                start_idx = i * batch_size
+                end_idx = min(start_idx + batch_size, n_samples)
+                
+                batch_seqs = list(sequence_df["Sequence"].iloc[start_idx:end_idx])
+                
+                # Extract mean pooling arrays via tokenized forward pass
+                batch_embeddings = get_mean_embeddings(batch_seqs, tokenizer, model, device)
+                batches.extend(batch_embeddings)
+                
+                # Update visual bar metrics inline
+                pbar.update(1)
 
         # Store each of the embedding values in a separate column in the dataframe.
         embeddings = pd.DataFrame(np.vstack(batches))
@@ -79,7 +150,7 @@ def store_sequence_embeddings(
         # Combine original dataframe with embeddings dataframe along columns
         df = pd.concat([sequence_df.reset_index(drop=True), embeddings], axis=1)
         df.to_feather(store_file)
-        # zarr.save(store_file, df, chunks=(1024,))
+        print(f"{store_file} is saved to the disk.")
 
 
 def get_mean_embeddings(
