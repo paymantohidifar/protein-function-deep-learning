@@ -42,6 +42,8 @@ dependencies = [
     "transformers>=4.54.0",
     "ipykernel>=7.3.0",
     "pixi-kernel>=0.1.0",
+    "jupyter>=1.1.1",
+    "zarr>=3.1.6",
 ]
 
 # Mutually Exclusive Hardware Accel Groups and Dev Utilities
