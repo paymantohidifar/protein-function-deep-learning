@@ -9,6 +9,10 @@
 # Virtual environments
 .venv/*
 
+# Python/IPython
+*__pycache__/
+*.ipynb_checkpoints
+
 # Docs
 docs/*
 
