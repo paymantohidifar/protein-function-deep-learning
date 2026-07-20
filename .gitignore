@@ -1,6 +1,20 @@
-# pixi environments
+# VS Code
+.vscode/*
+*.code-workspace
+
+# Pixi environments
 .pixi/*
 !.pixi/config.toml
 
-# docs
+# Virtual environments
+.venv/*
+
+# Docs
 docs/*
+
+# Models 
+models/*
+
+# Raw data
+dataset/*
+
