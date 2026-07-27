@@ -38,6 +38,7 @@ class ProtDataset(Dataset):
 
 
 def build_dataset(
+        batch_size: int,
         store_file_prefix: str,
         model_checkpoint: str
     ) -> dict[str, DataLoader]:
@@ -50,19 +51,40 @@ def build_dataset(
             model_checkpoint=model_checkpoint
         )
         dataset_splits[split] = create_data_loader(
-            ProtDataset(df),
+            df,
+            batch_size=batch_size,
             is_training=(split == "train")
         )
     
     return dataset_splits
 
 
-def create_data_loader(dataset, batch_size=32, is_training=False):
+# def numpy_collate(batch):
+#     """Intercepts the batch to collate samples into pure NumPy arrays."""
+#     transposed = zip(*batch)
+#     return [np.array(samples) for samples in transposed]
 
+
+def numpy_collate(batch):
+    """Intercepts the batch to collate samples of dictionaries into pure NumPy arrays."""
+    # Assumes all dictionaries in the batch have the same keys
+    first_item = batch[0]
+    
+    return {
+        key: np.array([sample[key] for sample in batch]) 
+        for key in first_item.keys()
+    }
+
+
+def create_data_loader(data: pd.DataFrame, batch_size: int=32, is_training: bool=False):
+
+    dataset = ProtDataset(data)
     return DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         shuffle=is_training, # Only shuffles the training set
+        num_workers=0,            # Keep execution on the main host thread for simplicity
+        collate_fn=numpy_collate,
         drop_last=is_training, # drop_last keeps batch sizes consistent during training steps
     )
 
