@@ -16,9 +16,8 @@
 # Docs
 docs/*
 
-# Models 
-models/*
-
-# Raw data
+# downloaded datasets / model checkpoints (large, regenerable)
 dataset/*
-
+!dataset/.gitkeep
+models/*
+!models/.gitkeep
