@@ -1,7 +1,3 @@
-import torch
-import torch.nn as nn
-
-import jax
 import jax.numpy as jnp
 from flax import nnx
 
@@ -47,7 +43,3 @@ class SimpleMlp(nnx.Module):
         # Final linear projection to multi-label task space
         logits = self.output_head(x)
         return logits
-
-
-class SimpleMlpTorch(nn.Module):
-    pass
