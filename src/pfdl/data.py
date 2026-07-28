@@ -1,15 +1,18 @@
+import os
 from pathlib import Path
-import zarr
 import numpy as np
 import pandas as pd
 from math import ceil
 import obonet
+from tqdm import tqdm
+import pyarrow.ipc as ipc
+
 import torch
 from torch.utils.data import Dataset, DataLoader
-import os
 from transformers import PreTrainedModel, PreTrainedTokenizer
+
 from pfdl.downloads import download_data
-from tqdm import tqdm
+
 
 
 class ProtDataset(Dataset):
@@ -211,4 +214,7 @@ def load_sequence_embeddings(
 
     model_name = model_checkpoint.replace("/", "_")
     store_file = f"{store_file_prefix}_{model_name}.feather"
-    return pd.read_feather(store_file)
+
+    with ipc.open_file(Path(store_file)) as reader:
+        return reader.read_all().to_pandas()
+    # return pd.read_feather(store_file)
