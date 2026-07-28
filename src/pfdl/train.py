@@ -92,8 +92,6 @@ def train_loop(
 
         train_metrics.append(train_entry)
         valid_metrics.append(valid_entry)
-
-        # pbar.set_description(f"Epoch: {epoch + 1}")
         
         print(f"Train accuracy: {train_entry['accuracy'] * 100:.2f}% | ", end="")
         print(f"Validation accuracy: {valid_entry['accuracy'] * 100:.2f}%")
@@ -105,12 +103,5 @@ def train_loop(
         # )
 
         # pbar.set_postfix(epoch=f"{epoch+1}", loss=f"{average_epoch_metrics['loss']:.4f}")
-        
-    # return {'train': train_metrics, 'valid': valid_metrics}
 
-    return (
-        train_losses,
-        valid_losses,
-        train_metrics,
-        valid_metrics
-    )
+    return train_losses, valid_losses, train_metrics, valid_metrics
