@@ -62,12 +62,6 @@ def build_dataset(
     return dataset_splits
 
 
-# def numpy_collate(batch):
-#     """Intercepts the batch to collate samples into pure NumPy arrays."""
-#     transposed = zip(*batch)
-#     return [np.array(samples) for samples in transposed]
-
-
 def numpy_collate(batch):
     """Intercepts the batch to collate samples of dictionaries into pure NumPy arrays."""
     # Assumes all dictionaries in the batch have the same keys
@@ -217,4 +211,3 @@ def load_sequence_embeddings(
 
     with ipc.open_file(Path(store_file)) as reader:
         return reader.read_all().to_pandas()
-    # return pd.read_feather(store_file)
