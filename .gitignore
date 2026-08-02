@@ -1,0 +1,23 @@
+# VS Code
+.vscode/*
+*.code-workspace
+
+# Pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Virtual environments
+.venv/*
+
+# Python/IPython
+*__pycache__/
+*.ipynb_checkpoints
+
+# Docs
+docs/*
+
+# downloaded datasets / model checkpoints (large, regenerable)
+dataset/*
+!dataset/.gitkeep
+models/*
+!models/.gitkeep
