@@ -1,6 +1,6 @@
 # Deep Learning for Protein Function Prediction
 
-This project is started to help AIxBio students or practitioners build on top of the 
+This project aims to help AIxBio students or practitioners build on top of the 
 concepts covered in the *Deep Learning for Biology* book, extending them into a 
 structured, reusable codebase rather than one-off notebook code.
 
