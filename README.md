@@ -1,7 +1,5 @@
 # Deep Learning for Protein Function Prediction
 
-[![CI](https://github.com/paymantohidifar/protein-function-deep-learning/actions/workflows/ci.yaml/badge.svg)](https://github.com/paymantohidifar/protein-function-deep-learning/actions/workflows/ci.yaml)
-
 This repo is created to help AIxBio practitioners build on top of the concepts covered
 in the *Deep Learning for Biology* book, extending them into a structured, reusable
 codebase rather than one-off notebook code.
