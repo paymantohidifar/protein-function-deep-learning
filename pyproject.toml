@@ -102,6 +102,7 @@ torchaudio = [
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+extend-exclude = ["notebooks"]
 
 # --- Pixi Configuration Hook (Read ONLY by local Pixi installations) ---
 [tool.pixi.workspace]
