@@ -171,7 +171,7 @@ proposed design before submitting a pull request.
 This platform is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
 
 Portions of this software are derived or adapted from work by Ravarani, C. and Latysheva, N. originally 
-licensed under the Apache License, Version 2.0. A copy of the Apache License is included in [LICENSE-APACHE](LICENSE-APACHE).
+licensed under the Apache License, Version 2.0.
 
 ## Acknowledgments & Citations
 
