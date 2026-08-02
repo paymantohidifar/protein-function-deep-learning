@@ -1,14 +1,13 @@
 # Deep Learning for Protein Function Prediction
 
-This repo is created to help AIxBio practitioners build on top of the concepts covered
-in the *Deep Learning for Biology* book, extending them into a structured, reusable
-codebase rather than one-off notebook code.
+This project is started to help AIxBio students or practitioners build on top of the 
+concepts covered in the *Deep Learning for Biology* book, extending them into a 
+structured, reusable codebase rather than one-off notebook code.
 
 `pfdl` is a compact, hackable platform for predicting protein function (GO terms) from
 protein language model embeddings. It pairs a light-weight PyTorch data pipeline for
 dataset processing with a modern, pythonic JAX/Flax NNX stack for model construction,
 training, and checkpointing — no heavyweight framework or boilerplate required.
-
 
 
 ## Project Structure
