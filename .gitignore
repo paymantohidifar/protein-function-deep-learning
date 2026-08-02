@@ -21,3 +21,9 @@ dataset/*
 !dataset/.gitkeep
 models/*
 !models/.gitkeep
+
+# CLAUDE
+.claude/*
+CLAUDE.md
+CLAUDE.local.md
+
