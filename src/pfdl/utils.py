@@ -1,370 +1,234 @@
-from transformers import PreTrainedModel, PreTrainedTokenizer
-from matplotlib.figure import Figure
-import flax.linen as nn
-from flax.training import train_state
-
-from sklearn import metrics
-
-import os
+from typing import Any
+import matplotlib.pyplot as plt
+from pathlib import Path
 import numpy as np
 import pandas as pd
+from flax import nnx
+import shutil
+import orbax.checkpoint as ocp
 
-import obonet
-
-
-import optax
-
-from dlfb.utils.restore import restorable
+from pfdl import paths
 
 
-class MaskPredictor:
-    """Predict masked amino acids using a protein language model."""
+class CheckpointClassifier:
+    """Orbax-backed checkpoint manager for Flax NNX models and optimizers.
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, model: PreTrainedModel):
-        """Initialize with a tokenizer and pretrained model."""
-        # Stores the Hugging Face components to the instance
-        self.tokenizer = tokenizer
-        self.model = model
+    Handles asynchronous state saving, step rotation, and state restoration
+    back into Flax NNX graph structures.
+    """
 
-    def plot_predictions(self, sequence: str, mask_index: int) -> Figure:
-        """Plot predicted probabilities for the masked amino acid."""
-        # Get the probability distribution for the masked position
-        mask_probs = self.predict(sequence, mask_index)
+    def __init__(
+        self,
+        checkpoint_dir: str = "classifier-checkpoints",
+        max_to_keep: int = 2,
+        best_metric: str = "val_loss",
+        clean_existing: bool = False,
+    ) -> None:
+        """Initializes the Orbax CheckpointManager.
 
-        # Setup the Matplotlib visualization
-        fig, _ = plt.subplots(figsize=(6, 4))
-        plt.bar(list(self.tokenizer.get_vocab().keys()), mask_probs, color="grey")
-        plt.xticks(rotation=90)
+        Args:
+            checkpoint_dir: Target directory path for storing checkpoint files.
+            max_to_keep: Maximum number of recent checkpoints to retain on
+              disk.
+            clean_existing: If True, wipes existing checkpoints in
+              `checkpoint_dir` upon initialization. Default is False to enable
+              resumption.
+        """
+        self.checkpoint_path = (paths.MODELS_DIR / checkpoint_dir).resolve()
 
-        # Use f-strings to dynamically label the true residue for comparison
-        plt.title(
-            "Model Probabilities for the Masked Amino Acid\n"
-            f"at Index={mask_index} (True Amino Acid = {sequence[mask_index]})."
+        if clean_existing and self.checkpoint_path.exists():
+            shutil.rmtree(self.checkpoint_path)
+
+        self.checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+        mngr_options = ocp.CheckpointManagerOptions(
+            max_to_keep=max_to_keep,
+            best_fn=lambda metrics: metrics[best_metric],
+            best_mode='min',
+            # create=True
         )
-        return fig
+        self.mngr = ocp.CheckpointManager(
+            self.checkpoint_path,
+            options=mngr_options
+        )
 
-    def predict(self, sequence: str, mask_index: int) -> jax.Array:
-        """Return model probabilities for masked amino acid at a position."""
-        # Generate the masked string (e.g., "MA<mask/>WM")
-        masked_sequence = self.mask_sequence(sequence, mask_index)
+    def save_checkpoint(
+        self,
+        step: int,
+        model: nnx.Module,
+        optimizer: nnx.Optimizer,
+        step_metrics: dict[str, Any],
+        step_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Asynchronously saves model parameters, optimizer state, and step metadata.
 
-        # Tokenize and move to PyTorch ("pt")
-        masked_inputs = self.tokenizer(masked_sequence, return_tensors="pt")
+        Args:
+            step: Monotonically increasing training step or epoch index.
+            model: Active Flax NNX model instance.
+            optimizer: Active Flax NNX optimizer instance.
+            metadata: Optional dictionary of scalar metrics or execution
+              metadata.
+        """
+        model_state = nnx.state(model)
+        optimizer_state = nnx.state(optimizer)
 
-        # Inference: Get raw logit scores from the model
-        model_outputs = self.model(**masked_inputs)
+        # Asynchronous save: launches background I/O thread
+        self.mngr.save(
+            step=step,
+            args=ocp.args.Composite(
+                model=ocp.args.StandardSave(model_state),
+                optimizer=ocp.args.StandardSave(optimizer_state)
+                ),
+            metrics=step_metrics,
+            custom_metadata=step_metadata
+        )
+            
 
-        # Extract the specific token prediction.
-        # Index is 'mask_index + 1' to account for the prepended <cls> token.
-        mask_preds = model_outputs.logits[0, mask_index + 1].detach().numpy()
+    def load_checkpoint(
+        self,
+        model: nnx.Module,
+        optimizer: nnx.Optimizer,
+        step: int | None = None,
+    ) -> tuple[int, dict[str, Any], dict[str, Any]]:
+        """Restores model and optimizer states in-place from the specified or latest step.
 
-        # Convert to probability distribution using Softmax
-        mask_probs = jax.nn.softmax(mask_preds)
-        return mask_probs
+        Args:
+            model: Instantiated Flax NNX model to receive restored parameters.
+            optimizer: Instantiated Flax NNX optimizer to receive restored
+              states.
+            step: Specific checkpoint step to restore. If None, fetches the
+              latest available step.
 
-    @staticmethod
-    def mask_sequence(sequence: str, mask_index: int) -> str:
-        """Insert mask token at specified index in the input sequence."""
-        # Boundary check to prevent slicing errors
-        if mask_index < 0 or mask_index > len(sequence):
-            raise ValueError("Mask index outside of sequence range.")
+        Returns:
+            A `(restored_step, step_metrics, custom_metadata)` tuple.
 
-        # String slicing to replace the target residue with the <mask> tag
-        return f"{sequence[0:mask_index]}<mask/>{sequence[(mask_index + 1):]}"
-    
+        Raises:
+            FileNotFoundError: If no valid checkpoints are available on disk.
+        """
+        target_step = step if step is not None else self.mngr.latest_step()
 
-def get_go_term_descriptions(store_path: str) -> pd.DataFrame:
-  """Return GO term to description mapping, downloading if needed."""
-  if not os.path.exists(store_path):
-    url = "https://current.geneontology.org/ontology/go-basic.obo"
+        if target_step is None:
+            raise FileNotFoundError(
+                f"No checkpoints found in directory: {self.checkpoint_path}"
+            )
 
-    # --- To get around 403 error ---
-    # import requests
-    # import io
+        # Construct target state template directly from live NNX objects
+        abstract_model_state = nnx.state(model)
+        abstract_optimizer_state = nnx.state(optimizer)
 
-    # response = requests.get(url)
-    # graph = obonet.read_obo(io.StringIO(response.text))
-    # -------------------------------
+        # Deserialize binary artifacts directly into matching PyTree structure
+        restored_states = self.mngr.restore(
+            step=target_step,
+            args=ocp.args.Composite(
+                model=ocp.args.StandardRestore(abstract_model_state),
+                optimizer=ocp.args.StandardRestore(abstract_optimizer_state)
+            )
+        )
 
-    graph = obonet.read_obo(url)  
+        # Re-bind restored PyTree states back into live Flax NNX objects in-place
+        nnx.update(model, restored_states["model"])
+        nnx.update(optimizer, restored_states["optimizer"])
 
-    # Extract GO term IDs and names from the graph nodes.
-    id_to_name = {id: data.get("name") for id, data in graph.nodes(data=True)}
-    go_term_descriptions = pd.DataFrame(
-      zip(id_to_name.keys(), id_to_name.values()),
-      columns=["term", "description"],
-    )
-    go_term_descriptions.to_csv(store_path, index=False)
+        # Restore step metrics and metadata
+        step_metrics = self.mngr.metrics(step=target_step)
+        step_meta = self.mngr.metadata(step=target_step)
+        custom_meta = step_meta.custom_metadata
 
-  else:
-    go_term_descriptions = pd.read_csv(store_path)
-  return go_term_descriptions
+        print(
+            f"Successfully restored checkpoint from step {target_step} into NNX objects."
+        )
+        return target_step, step_metrics, custom_meta
+
+    def close(self) -> None:
+        """Blocks until pending background I/O save operations complete."""
+        self.mngr.wait_until_finished()
 
 
-def store_sequence_embeddings(
-  sequence_df: pd.DataFrame,
-  store_prefix: str,
-  tokenizer: PreTrainedTokenizer,
-  model: PreTrainedModel,
-  batch_size: int = 64,
-  force: bool = False,
+def _draw_metric(
+    ax: plt.Axes,
+    epochs_seen: np.ndarray,
+    examples_seen: np.ndarray,
+    train_values: list[float],
+    val_values: list[float],
+    label: str,
 ) -> None:
-  """Extract and store mean embeddings for each protein sequence."""
-  model_name = str(model.name_or_path).replace("/", "_")
-  store_file = f"{store_prefix}_{model_name}.feather"
+    """Draw train/validation curves for one metric onto ``ax``.
 
-  if not os.path.exists(store_file) or force:
-    device = get_device()
+    Args:
+        ax: Axes to draw onto.
+        epochs_seen: X-axis values (epochs) for the primary axis.
+        examples_seen: X-axis values (examples seen) for the secondary axis.
+        train_values: Training metric values.
+        val_values: Validation metric values.
+        label: Metric name, used in the legend and axis label.
+    """
+    ax.plot(epochs_seen, train_values, label=f"Training {label}")
+    ax.plot(epochs_seen, val_values, linestyle="-.", label=f"Validation {label}")
+    ax.set_xlabel("Epochs")
+    ax.set_ylabel(label.capitalize())
+    if label != "loss":
+        ax.set_ylim(0, 1)
+    ax.legend()
 
-    # Iterate through protein dataframe in batches, extracting embeddings.
-    n_batches = ceil(sequence_df.shape[0] / batch_size)
-    batches: list[np.ndarray] = []
-    for i in range(n_batches):
-      batch_seqs = list(
-        sequence_df["Sequence"][i * batch_size : (i + 1) * batch_size]
-      )
-      batches.extend(get_mean_embeddings(batch_seqs, tokenizer, model, device))
-
-    # Store each of the embedding values in a separate column in the dataframe.
-    embeddings = pd.DataFrame(np.vstack(batches))
-    embeddings.columns = [f"ME:{int(i)+1}" for i in range(embeddings.shape[1])]
-    df = pd.concat([sequence_df.reset_index(drop=True), embeddings], axis=1)
-    df.to_feather(store_file)
-
-
-def load_sequence_embeddings(
-  store_file_prefix: str, model_checkpoint: str
-) -> pd.DataFrame:
-  """Load stored embedding DataFrame from disk."""
-  model_name = model_checkpoint.replace("/", "_")
-  store_file = f"{store_file_prefix}_{model_name}.feather"
-  return pd.read_feather(store_file)
+    ax_top = ax.twiny()
+    ax_top.plot(examples_seen, train_values, alpha=0)
+    ax_top.set_xlabel("Examples seen")
 
 
-def convert_to_tfds(
-  df: pd.DataFrame,
-  embeddings_prefix: str = "ME:",   # Prefix for Mean Embedding columns (e.g., ME:0, ME:1...)
-  target_prefix: str = "GO:",       # Prefix for multi-hot encoded GO labels
-  is_training: bool = False,       # Toggle for training-specific optimizations
-  shuffle_buffer: int = 50,         # Determines how many items to buffer for random sampling
-) -> tf.data.Dataset:
-  """Convert embedding DataFrame into a TensorFlow dataset."""
-  
-  # Slice and Extract
-  # filter(regex=...) identifies columns by their prefix.
-  # to_numpy() converts the tabular data into dense numerical matrices.
-  # from_tensor_slices() creates a dataset where each row in the array becomes an element.
-  dataset = tf.data.Dataset.from_tensor_slices(
-    {
-      "embedding": df.filter(regex=f"^{embeddings_prefix}").to_numpy(),
-      "target": df.filter(regex=f"^{target_prefix}").to_numpy(),
-    }
-  )
+def plot_results(
+    num_epochs: int,
+    train_losses: list[float],
+    valid_losses: list[float],
+    train_metrics: dict[str, float],
+    valid_metrics: dict[str, float],
+    examples_seen: int,
+    dataset: str,
+    title: str | None = None,
+    plot_name: str | None = "metrics.png",
+    output_dir: Path = paths.PLOTS_DIR,
+) -> Path:
+    """Plots train/validation loss and per-metric curves and saves the figure to disk.
 
-  # Training Pipeline Optimizations
-  if is_training:
-    # shuffle() ensures the model doesn't learn the order of the examples.
-    # repeat() allows the dataset to be streamed indefinitely over multiple epochs.
-    dataset = dataset.shuffle(shuffle_buffer).repeat()
+    Args:
+        num_epochs: Total number of training epochs, used for the epoch axis.
+        train_losses: Training loss recorded at each evaluation step.
+        valid_losses: Validation loss recorded at each evaluation step.
+        train_metrics: Per-step training classification metrics, keyed by
+          metric name.
+        valid_metrics: Per-step validation classification metrics, keyed by
+          metric name.
+        examples_seen: Total number of training examples seen, used for the
+          secondary "examples seen" axis.
+        dataset: Subdirectory name (under `output_dir`) to save the plot into.
+        title: Optional figure title.
+        plot_name: Output image filename.
+        output_dir: Base directory to save the plot under.
 
-  return dataset
+    Returns:
+        Path to the saved plot image.
+    """
+    df_train = pd.DataFrame(train_metrics)
+    df_valid = pd.DataFrame(valid_metrics)
 
+    metrics_to_plot = [("loss", train_losses, valid_losses)]
+    for col in df_train.columns:
+        metrics_to_plot.append((col, df_train[col].tolist(), df_valid[col].tolist()))    
 
-def build_dataset(
-  store_file_prefix: str,
-  model_checkpoint: str
-) -> dict[str, tf.data.Dataset]:
-  """Build train/valid/test TensorFlow datasets from stored embeddings."""
-  dataset_splits = {}
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes = axes.flatten()
+    for ax, (label, train_values, val_values) in zip(axes, metrics_to_plot):
+        epochs_tensor = np.linspace(0, num_epochs, len(train_values))
+        examples_seen_tensor = np.linspace(0, examples_seen, len(train_values))
 
-  for split in ["train", "valid", "test"]:
-    dataset_splits[split] = convert_to_tfds(
-      df=load_sequence_embeddings(
-         store_file_prefix=f"{store_file_prefix}_{split}",
-         model_checkpoint=model_checkpoint,
-      ),
-      is_training=(split == "train"),
-    )
-  return dataset_splits
+        _draw_metric(ax, epochs_tensor, examples_seen_tensor, train_values, val_values, label)
 
+    if title:
+          fig.suptitle(title, fontweight='bold')
+    fig.tight_layout()
 
-class Model(nn.Module):
-  """Simple MLP for protein function prediction."""
-
-  # Hyperparameters
-  num_targets: int       # Number of GO terms to predict (e.g., 303)
-  dim: int = 256         # Base dimension for hidden layers
-
-  @nn.compact
-  def __call__(self, x):
-    """Apply MLP layers to input features."""
-    
-    # Sequential Architecture
-    x = nn.Sequential(
-      [
-        # Layer 1: Expansion. Projects embedding (e.g., 256) to a wider space (512).
-        nn.Dense(self.dim * 2),
-        jax.nn.gelu,          # Smooth activation (Gaussian Error Linear Unit)
-        
-        # Layer 2: Contraction.
-        nn.Dense(self.dim),
-        jax.nn.gelu,
-        
-        # Layer 3: Output Projection.
-        # Projects to the number of functional labels.
-        nn.Dense(self.num_targets),
-      ]
-    )(x)
-    return x
-  
-def create_train_state(self, rng: jax.Array, dummy_input, tx) -> TrainState:
-    """Initialize model parameters and return a training state."""
-    
-    # Parameter Initialization
-    # self.init runs the forward pass with dummy_input to determine weight shapes.
-    variables = self.init(rng, dummy_input)
-    
-    # Training State Creation
-    # Encapsulates parameters, the forward function (apply_fn), and the optimizer (tx).
-    return TrainState.create(
-       apply_fn=self.apply,
-       params=variables["params"],
-       tx=tx
-    )
-
-@jax.jit
-def train_step(state, batch):
-  """Run a single training step and update model parameters."""
-
-  # Define the Differentiable Objective
-  def calculate_loss(params):
-    """Compute sigmoid cross-entropy loss from logits."""
-    # Pass embeddings through the model (state.apply_fn) to get raw logits
-    logits = state.apply_fn({"params": params}, x=batch["embedding"])
-    
-    # Use Sigmoid Binary Cross Entropy for multi-label classification.
-    loss = optax.sigmoid_binary_cross_entropy(logits, batch["target"]).mean()
-    return loss
-
-  # Gradient Calculation
-  # value_and_grad returns both the loss (value) and the derivatives (grad).
-  grad_fn = jax.value_and_grad(calculate_loss, has_aux=False)
-  loss, grads = grad_fn(state.params)
-
-  # Parameter Update
-  # apply_gradients handles the optimizer logic (e.g., Adam) to update weights.
-  state = state.apply_gradients(grads=grads)
-  
-  return state, loss
-
-def compute_metrics(
-    targets: np.ndarray, probs: np.ndarray, thresh=0.5
-) -> dict[str, float]:
-    """Compute accuracy, recall, precision, auPRC, and auROC."""
-    
-    # Edge-Case Guard: Prevent division-by-zero crashes if there are no positive targets
-    # (e.g., auROC/Recall are mathematically undefined if the true positive count is 0)
-    if np.sum(targets) == 0:
-        return {
-            m: 0.0 for m in ["accuracy", "recall", "precision", "auprc", "auroc"]
-        }
-        
-    return {
-        # Threshold-dependent metric: Evaluates hard discrete classifications (True vs False)
-        "accuracy": float(metrics.accuracy_score(targets, probs >= thresh)),
-        
-        # Recall (Sensitivity): Proportion of actual positives correctly identified
-        "recall": metrics.recall_score(targets, probs >= thresh).item(),
-        
-        # Precision (PPV): Proportion of predicted positives that are truly positive
-        # zero_division=0.0 prevents a crash if the model predicts 0 positive instances total
-        "precision": metrics.precision_score(
-            targets,
-            probs >= thresh,
-            zero_division=0.0,
-        ).item(),
-        
-        # Area Under the Precision-Recall Curve (auPRC): Threshold-agnostic metric 
-        # that evaluates prediction confidence ranking (highly robust for imbalanced data)
-        "auprc": metrics.average_precision_score(targets, probs).item(),
-        
-        # Area Under the Receiver Operating Characteristic (auROC): Probability that a 
-        # randomly chosen positive sample ranks higher than a randomly chosen negative sample
-        "auroc": metrics.roc_auc_score(targets, probs).item(),
-    }
-
-
-def eval_step(state, batch) -> dict[str, float]:
-    """Run evaluation step and return mean metrics over targets."""
-    
-    # Forward Pass: Compute unnormalized log-probabilities (logits) using the model's apply function
-    logits = state.apply_fn({"params": state.params}, x=batch["embedding"])
-    
-    # Compute the multi-label binary cross-entropy loss and average it across the batch
-    loss = optax.sigmoid_binary_cross_entropy(logits, batch["target"]).mean()
-    
-    # Compute metrics column-by-column (per target) across the entire batch
-    target_metrics = calculate_per_target_metrics(logits, batch["target"])
-    
-    # Construct the final dictionary: Extract scalar loss and calculate the mean 
-    # of each evaluation metric across all evaluated targets using a Pandas DataFrame
-    metrics_summary = {
-        "loss": loss.item(),
-        **pd.DataFrame(target_metrics).mean(axis=0).to_dict(),
-    }
-    return metrics_summary
-
-
-def calculate_per_target_metrics(logits, targets) -> list[dict[str, float]]:
-    """Compute metrics for each discrete target class across a multi-label batch."""
-    
-    probs = jax.nn.sigmoid(logits)
-    target_metrics = []
-    
-    # Loop over every protein (example) independently
-    for target, prob in zip(targets, probs):
-        # compute_metrics evaluates accuracy/recall/precision/PRC/ROC for a single protein
-        metric_dict = compute_metrics(target, prob)
-        target_metrics.append(metric_dict)
-        
-    return target_metrics
-
-
-def train(
-    state: TrainState,
-    dataset_splits: dict[str, tf.data.Dataset],
-    batch_size: int,
-    num_steps: int = 300,
-    eval_every: int = 30,
-    ):
-    """Train model using batched TF datasets and track performance metrics."""
-    
-    # Create containers to handle calculated during training and evaluation.
-    train_metrics, valid_metrics = [], []
-    
-    # Create batched dataset to pluck batches from for each step.
-    train_batches = (
-        dataset_splits["train"]
-        .batch(batch_size, drop_remainder=True)
-        .as_numpy_iterator()
-    )
-
-    steps = tqdm(range(num_steps)) # Steps with progress bar.
-    for step in steps:
-        steps.set_description(f"Step {step + 1}")
-        
-        # Get batch of training data, convert into a JAX array, and train.
-        state, loss = train_step(state, next(train_batches))
-        train_metrics.append({"step": step, "loss": loss.item()})
-        
-        if step % eval_every == 0:
-            # For all the evaluation batches, calculate metrics.
-            eval_metrics = []
-            for eval_batch in (
-                dataset_splits["valid"].batch(batch_size=batch_size).as_numpy_iterator()
-                ):
-                eval_metrics.append(eval_step(state, eval_batch))
-            valid_metrics.append(
-                {"step": step, **pd.DataFrame(eval_metrics).mean(axis=0).to_dict()}
-        )
-    return state, {"train": train_metrics, "valid": valid_metrics}
+    output_dir = Path(output_dir) / dataset
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / plot_name
+    fig.savefig(output_path, bbox_inches='tight')
+    plt.close(fig)
+    return output_path

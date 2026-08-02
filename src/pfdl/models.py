@@ -43,3 +43,7 @@ class SimpleMlp(nnx.Module):
         # Final linear projection to multi-label task space
         logits = self.output_head(x)
         return logits
+
+    def get_model_name(self) -> str:
+        """Returns the model's class name, used to tag checkpoint metadata."""
+        return self.__class__.__name__

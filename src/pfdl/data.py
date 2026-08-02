@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 import numpy as np
@@ -13,17 +14,26 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from pfdl.downloads import download_data
 
+logger = logging.getLogger(__name__)
 
 
 class ProtDataset(Dataset):
+    """PyTorch dataset backed by a feather-loaded DataFrame of embeddings and GO-term targets."""
 
     def __init__(
             self,
             df: pd.DataFrame,
             embedding_prefix: str = "ME",
             target_prefix: str = "GO",
-        ) -> Dataset:
-        
+        ) -> None:
+        """Initializes the dataset from a DataFrame of embedding and target columns.
+
+        Args:
+            df: DataFrame containing embedding columns prefixed with
+              `embedding_prefix` and target columns prefixed with `target_prefix`.
+            embedding_prefix: Column-name prefix identifying embedding features.
+            target_prefix: Column-name prefix identifying GO-term target labels.
+        """
         # Set both embbedding and target data types numpy.float32
         # Compatible with both PyTorch and JAX/FLAX
         self.embedding = df.filter(regex=f"^{embedding_prefix}").to_numpy(dtype=np.float32)
@@ -31,9 +41,9 @@ class ProtDataset(Dataset):
 
     def __len__(self):
         return self.embedding.shape[0]
-    
+
     def __getitem__(self, idx):
-        
+
         return {
             'embedding': self.embedding[idx],
             'target': self.target[idx]
@@ -45,7 +55,18 @@ def build_dataset(
         store_file_prefix: str,
         model_checkpoint: str
     ) -> dict[str, DataLoader]:
+    """Builds train/valid/test DataLoaders from cached sequence-embedding feathers.
 
+    Args:
+        batch_size: Batch size used for all three DataLoaders.
+        store_file_prefix: Shared filename prefix used to locate each split's
+          cached embedding feather (split name is appended, e.g. `{prefix}_train`).
+        model_checkpoint: HuggingFace checkpoint id used to derive the cached
+          embedding filename.
+
+    Returns:
+        A dict mapping split name (`"train"`, `"valid"`, `"test"`) to its DataLoader.
+    """
     dataset_splits = {}
 
     for split in ["train", "valid", "test"]:
@@ -73,8 +94,18 @@ def numpy_collate(batch):
     }
 
 
-def create_data_loader(data: pd.DataFrame, batch_size: int=32, is_training: bool=False):
+def create_data_loader(data: pd.DataFrame, batch_size: int = 32, is_training: bool = False) -> DataLoader:
+    """Wraps a DataFrame in a `ProtDataset` and a PyTorch `DataLoader`.
 
+    Args:
+        data: DataFrame of embedding and target columns (see `ProtDataset`).
+        batch_size: Number of samples per batch.
+        is_training: If True, shuffles samples and drops the last incomplete
+          batch to keep training batch sizes consistent.
+
+    Returns:
+        A DataLoader yielding NumPy-collated `{"embedding", "target"}` batches.
+    """
     dataset = ProtDataset(data)
     return DataLoader(
         dataset=dataset,
@@ -88,14 +119,13 @@ def create_data_loader(data: pd.DataFrame, batch_size: int=32, is_training: bool
 
 def get_go_term_descriptions(obo_url: str, store_path: Path) -> pd.DataFrame:
     """Return GO term to description mapping, downloading if needed."""
-    # if not os.path.exists(store_path):
     if not store_path.exists():
-        
+
         try:
             graph = obonet.read_obo(obo_url)
-            
+
         except Exception as e:
-            print(f"Error occured: {e}.\nTrying another method ...")
+            logger.warning("Error occured: %s. Trying another method ...", e)
             url_parts = obo_url.split('/')
             base_url = "/".join(url_parts[:-1])
             filename = url_parts[-1]
@@ -111,9 +141,9 @@ def get_go_term_descriptions(obo_url: str, store_path: Path) -> pd.DataFrame:
         )
         go_term_descriptions.to_csv(store_path, index=False)
 
-        print(f"File is saved to {store_path}.")
+        logger.info("File is saved to %s.", store_path)
     else:
-        print("File already exists. Parsing the file into dataframe.")
+        logger.info("File already exists. Parsing the file into dataframe.")
         go_term_descriptions = pd.read_csv(store_path)
     
     return go_term_descriptions
@@ -169,7 +199,7 @@ def store_sequence_embeddings(
         # Combine original dataframe with embeddings dataframe along columns
         df = pd.concat([sequence_df.reset_index(drop=True), embeddings], axis=1)
         df.to_feather(store_file)
-        print(f"{store_file} is saved to the disk.")
+        logger.info("%s is saved to the disk.", store_file)
 
 
 def get_mean_embeddings(
